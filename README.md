@@ -1,36 +1,49 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RealStore — 3D Virtual Supermarket
 
-## Getting Started
+First-person 3D grocery shopping prototype built with **Next.js**, **Tailwind CSS**, and **React Three Fiber**.
 
-First, run the development server:
+## Controls
+
+| Action | Input |
+|--------|--------|
+| Walk | `↑` `↓` |
+| Turn | `←` `→` |
+| Look | Mouse (free look) or right-drag |
+| Select product | Aim crosshair + click |
+| Cart / checkout | Header cart button |
+
+## Local development
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm run build   # production build
+npm run test:smoke  # requires dev server + Playwright Chromium
+```
 
 ## Deploy on Vercel
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+This is a standard Next.js App Router app — no special adapter required.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Import the GitHub repo in [Vercel](https://vercel.com/new)
+2. Framework preset: **Next.js** (auto-detected)
+3. Build command: `npm run build`
+4. Output: default (no static export)
+5. Deploy
+
+Or with the Vercel CLI:
+
+```bash
+npx vercel
+```
+
+## Stack
+
+- Next.js 16 (App Router) + TypeScript + Tailwind CSS 4
+- `@react-three/fiber` + `@react-three/drei` + `three`
+- Zustand cart state · Lucide icons

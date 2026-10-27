@@ -24,7 +24,7 @@ export const StoreCanvas = ({
       className="absolute inset-0 h-full w-full touch-none"
       shadows
       dpr={[1, 1.75]}
-      camera={{ fov: 68, near: 0.1, far: 80, position: [0, 1.65, 7] }}
+      camera={{ fov: 68, near: 0.1, far: 80, position: [0, 1.65, 8.2] }}
       gl={{
         antialias: true,
         powerPreference: 'high-performance',

@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect } from 'react'
 import { Plus, X } from 'lucide-react'
 import { useCartStore } from '@/store/use-cart-store'
 import { formatMoney } from '@/lib/utils'
@@ -12,12 +13,11 @@ export const ProductModal = () => {
   const setSelectedProduct = useCartStore((state) => state.setSelectedProduct)
   const addItem = useCartStore((state) => state.addItem)
 
-  if (!product) return null
-
   /**
    * Adds the product, closes the card, and restores free-look.
    */
   const handleAdd = () => {
+    if (!product) return
     addItem(product)
     setSelectedProduct(null)
     window.setTimeout(() => {
@@ -34,6 +34,26 @@ export const ProductModal = () => {
       document.querySelector('canvas')?.requestPointerLock()
     }, 80)
   }
+
+  useEffect(() => {
+    if (!product) return
+    /**
+     * Confirms add with E while the product card is open.
+     * @param event - Keyboard event
+     */
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code === 'KeyE' || event.code === 'Enter') {
+        event.preventDefault()
+        handleAdd()
+      }
+      if (event.code === 'Escape') handleClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- bind to current product only
+  }, [product])
+
+  if (!product) return null
 
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-28 z-40 flex justify-center px-4">
@@ -73,6 +93,7 @@ export const ProductModal = () => {
         >
           Add to cart
           <Plus className="h-4 w-4" />
+          <kbd className="ml-0.5 rounded bg-white/20 px-1.5 py-0.5 text-[10px]">E</kbd>
         </button>
       </div>
     </div>

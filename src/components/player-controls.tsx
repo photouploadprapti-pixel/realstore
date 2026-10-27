@@ -4,12 +4,11 @@ import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 
-const MOVE_SPEED = 5.2
-const TURN_SPEED = 1.8
+const MOVE_SPEED = 5.5
 const LOOK_SPEED = 0.002
 const PLAYER_HEIGHT = 1.65
-const PLAYER_RADIUS = 0.35
-const PITCH_LIMIT = 1.2
+const PLAYER_RADIUS = 0.32
+const PITCH_LIMIT = 1.15
 
 /** Walkable store bounds (x/z). */
 export const STORE_BOUNDS = {
@@ -32,14 +31,19 @@ const OBSTACLES: { minX: number; maxX: number; minZ: number; maxZ: number }[] = 
 
 interface PlayerControlsProps {
   enabled: boolean
-  /** When true, arrow keys still move even if a product card is open. */
   movementEnabled: boolean
   onLock?: () => void
   onUnlock?: () => void
 }
 
 /**
- * Store walking controls: ↑↓ walk, ←→ turn, mouse looks when locked.
+ * Returns 1/0 from a possibly undefined key flag (avoids NaN from Number(undefined)).
+ * @param value - Key pressed flag
+ */
+const keyBit = (value: boolean | undefined) => (value ? 1 : 0)
+
+/**
+ * FPS walk controls: ↑↓←→ / WASD move relative to look; mouse looks around.
  * @param props - Enable flags and lock callbacks
  */
 export const PlayerControls = ({
@@ -49,104 +53,81 @@ export const PlayerControls = ({
   onUnlock,
 }: PlayerControlsProps) => {
   const { camera, gl } = useThree()
-  const keysRef = useRef<Record<string, boolean>>({})
+  const keysRef = useRef<Record<string, boolean>>({
+    ArrowUp: false,
+    ArrowDown: false,
+    ArrowLeft: false,
+    ArrowRight: false,
+    KeyW: false,
+    KeyA: false,
+    KeyS: false,
+    KeyD: false,
+  })
   const euler = useRef(new THREE.Euler(0, 0, 0, 'YXZ'))
   const isLocked = useRef(false)
   const isDragging = useRef(false)
   const forward = useRef(new THREE.Vector3())
-  const initialized = useRef(false)
+  const right = useRef(new THREE.Vector3())
+  const wish = useRef(new THREE.Vector3())
+  const spawned = useRef(false)
 
   useEffect(() => {
-    if (initialized.current) return
-    initialized.current = true
-    camera.position.set(0, PLAYER_HEIGHT, 7)
+    if (spawned.current) return
+    spawned.current = true
+    // Spawn in the clear center aisle, facing into the store (-Z)
+    camera.position.set(0, PLAYER_HEIGHT, 8.2)
     euler.current.set(0, 0, 0)
     camera.quaternion.setFromEuler(euler.current)
-    // Test hooks for Playwright / manual debugging
+
     if (typeof window !== 'undefined') {
       const w = window as unknown as {
         __rsCam?: THREE.Camera
         __rsEuler?: THREE.Euler
         __rsKeys?: Record<string, boolean>
-        __rsStep?: (dt: number) => void
       }
       w.__rsCam = camera
       w.__rsEuler = euler.current
       w.__rsKeys = keysRef.current
-      w.__rsStep = (dt: number) => {
-        const keys = keysRef.current
-        const turn =
-          Number(Boolean(keys.ArrowRight || keys.KeyD)) -
-          Number(Boolean(keys.ArrowLeft || keys.KeyA))
-        if (turn) {
-          euler.current.y -= turn * TURN_SPEED * dt
-          camera.quaternion.setFromEuler(euler.current)
-        }
-        const walk =
-          Number(Boolean(keys.ArrowUp || keys.KeyW)) -
-          Number(Boolean(keys.ArrowDown || keys.KeyS))
-        if (!walk) {
-          return { moved: false, keys: { ...keys }, walk, turn }
-        }
-        const fx = -Math.sin(euler.current.y) * walk * MOVE_SPEED * dt
-        const fz = -Math.cos(euler.current.y) * walk * MOVE_SPEED * dt
-        const nextX = THREE.MathUtils.clamp(
-          camera.position.x + fx,
-          STORE_BOUNDS.minX,
-          STORE_BOUNDS.maxX
-        )
-        const nextZ = THREE.MathUtils.clamp(
-          camera.position.z + fz,
-          STORE_BOUNDS.minZ,
-          STORE_BOUNDS.maxZ
-        )
-        const blockedX = collides(nextX, camera.position.z)
-        const blockedZ = collides(camera.position.x, nextZ)
-        if (!blockedX) camera.position.x = nextX
-        if (!blockedZ) camera.position.z = nextZ
-        camera.position.y = PLAYER_HEIGHT
-        return {
-          moved: !blockedX || !blockedZ,
-          walk,
-          turn,
-          nextZ,
-          blockedZ,
-          z: camera.position.z,
-        }
-      }
     }
   }, [camera])
 
   useEffect(() => {
     const canvas = gl.domElement
+    const moveCodes = new Set([
+      'ArrowUp',
+      'ArrowDown',
+      'ArrowLeft',
+      'ArrowRight',
+      'KeyW',
+      'KeyA',
+      'KeyS',
+      'KeyD',
+    ])
 
     /**
-     * Tracks movement keys (always, so keys are not missed while UI is open).
+     * Tracks pressed movement keys.
      * @param event - Keyboard event
      */
     const onKeyDown = (event: KeyboardEvent) => {
-      const code = event.code
-      if (
-        code === 'ArrowUp' ||
-        code === 'ArrowDown' ||
-        code === 'ArrowLeft' ||
-        code === 'ArrowRight' ||
-        code === 'KeyW' ||
-        code === 'KeyA' ||
-        code === 'KeyS' ||
-        code === 'KeyD'
-      ) {
-        event.preventDefault()
-        keysRef.current[code] = true
-      }
+      if (!moveCodes.has(event.code)) return
+      event.preventDefault()
+      keysRef.current[event.code] = true
     }
 
     /**
-     * Clears released keys.
+     * Clears released movement keys.
      * @param event - Keyboard event
      */
     const onKeyUp = (event: KeyboardEvent) => {
+      if (!moveCodes.has(event.code)) return
       keysRef.current[event.code] = false
+    }
+
+    /**
+     * Clears all keys when the window loses focus (prevents stuck keys).
+     */
+    const clearKeys = () => {
+      for (const code of moveCodes) keysRef.current[code] = false
     }
 
     /**
@@ -164,7 +145,7 @@ export const PlayerControls = ({
     }
 
     /**
-     * Right-drag look when not pointer-locked.
+     * Starts right-drag look when not pointer-locked.
      * @param event - Pointer down
      */
     const onPointerDown = (event: PointerEvent) => {
@@ -187,7 +168,7 @@ export const PlayerControls = ({
     }
 
     /**
-     * Prevents context menu during right-drag look.
+     * Blocks the browser context menu for right-drag look.
      * @param event - Context menu event
      */
     const onContextMenu = (event: Event) => {
@@ -195,7 +176,7 @@ export const PlayerControls = ({
     }
 
     /**
-     * Syncs pointer-lock state.
+     * Syncs pointer-lock state for free look.
      */
     const onLockChange = () => {
       const locked = document.pointerLockElement === canvas
@@ -206,6 +187,7 @@ export const PlayerControls = ({
 
     window.addEventListener('keydown', onKeyDown, { passive: false })
     window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', clearKeys)
     document.addEventListener('mousemove', onMouseMove)
     document.addEventListener('pointerlockchange', onLockChange)
     canvas.addEventListener('pointerdown', onPointerDown)
@@ -216,6 +198,7 @@ export const PlayerControls = ({
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', clearKeys)
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('pointerlockchange', onLockChange)
       canvas.removeEventListener('pointerdown', onPointerDown)
@@ -231,28 +214,37 @@ export const PlayerControls = ({
     const dt = Math.min(delta, 0.05)
     const keys = keysRef.current
 
-    // ← → turn in place (works without mouse)
-    const turn =
-      Number(keys.ArrowRight || keys.KeyD) - Number(keys.ArrowLeft || keys.KeyA)
-    if (turn) {
-      euler.current.y -= turn * TURN_SPEED * dt
-      camera.quaternion.setFromEuler(euler.current)
-    }
+    // Demo-style: all four arrows / WASD move on the floor plane
+    const moveForward = keyBit(keys.ArrowUp || keys.KeyW) - keyBit(keys.ArrowDown || keys.KeyS)
+    const moveStrafe = keyBit(keys.ArrowRight || keys.KeyD) - keyBit(keys.ArrowLeft || keys.KeyA)
 
-    // ↑ ↓ walk along facing direction on the floor plane
-    const walk =
-      Number(keys.ArrowUp || keys.KeyW) - Number(keys.ArrowDown || keys.KeyS)
-    if (!walk) return
+    if (!moveForward && !moveStrafe) return
 
-    // Use yaw only so pitch does not break walking direction
-    forward.current.set(-Math.sin(euler.current.y), 0, -Math.cos(euler.current.y))
-    forward.current.multiplyScalar(walk * MOVE_SPEED * dt)
+    // Yaw-only facing so pitch does not break walking
+    const yaw = euler.current.y
+    forward.current.set(-Math.sin(yaw), 0, -Math.cos(yaw))
+    right.current.set(Math.cos(yaw), 0, -Math.sin(yaw))
 
-    const tryX = camera.position.x + forward.current.x
-    const tryZ = camera.position.z + forward.current.z
-    const nextX = THREE.MathUtils.clamp(tryX, STORE_BOUNDS.minX, STORE_BOUNDS.maxX)
-    const nextZ = THREE.MathUtils.clamp(tryZ, STORE_BOUNDS.minZ, STORE_BOUNDS.maxZ)
+    wish.current
+      .set(0, 0, 0)
+      .addScaledVector(forward.current, moveForward)
+      .addScaledVector(right.current, moveStrafe)
 
+    if (wish.current.lengthSq() < 0.0001) return
+    wish.current.normalize().multiplyScalar(MOVE_SPEED * dt)
+
+    const nextX = THREE.MathUtils.clamp(
+      camera.position.x + wish.current.x,
+      STORE_BOUNDS.minX,
+      STORE_BOUNDS.maxX
+    )
+    const nextZ = THREE.MathUtils.clamp(
+      camera.position.z + wish.current.z,
+      STORE_BOUNDS.minZ,
+      STORE_BOUNDS.maxZ
+    )
+
+    // Axis-separated sliding along shelves
     if (!collides(nextX, camera.position.z)) camera.position.x = nextX
     if (!collides(camera.position.x, nextZ)) camera.position.z = nextZ
     camera.position.y = PLAYER_HEIGHT

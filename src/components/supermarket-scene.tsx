@@ -28,17 +28,23 @@ export const SupermarketScene = ({
 }: SupermarketSceneProps) => {
   const { camera, scene, gl } = useThree()
   const setSelectedProduct = useCartStore((state) => state.setSelectedProduct)
+  const setAimedProduct = useCartStore((state) => state.setAimedProduct)
+  const addItem = useCartStore((state) => state.addItem)
   const selectedProduct = useCartStore((state) => state.selectedProduct)
+  const aimedProduct = useCartStore((state) => state.aimedProduct)
   const [aimedInstanceId, setAimedInstanceId] = useState<string | null>(null)
   const raycaster = useMemo(() => new THREE.Raycaster(), [])
   const center = useMemo(() => new THREE.Vector2(0, 0), [])
   const aimCooldown = useRef(0)
+  const eulerRef = useRef<THREE.Euler | null>(null)
 
   useEffect(() => {
     if (typeof window === 'undefined') return
     const w = window as unknown as {
       __rsScene?: THREE.Scene
       __rsCountProducts?: () => { products: number; unique: number }
+      __rsTeleport?: (x: number, z: number, yaw: number) => void
+      __rsEuler?: THREE.Euler
     }
     w.__rsScene = scene
     w.__rsCountProducts = () => {
@@ -50,7 +56,32 @@ export const SupermarketScene = ({
       })
       return { products: ids.length, unique: new Set(ids).size }
     }
-  }, [scene])
+    w.__rsTeleport = (x, z, yaw) => {
+      camera.position.set(x, 1.65, z)
+      const euler = w.__rsEuler
+      if (euler) {
+        euler.set(0, yaw, 0)
+        camera.quaternion.setFromEuler(euler)
+      }
+      eulerRef.current = euler ?? null
+    }
+  }, [camera, scene])
+
+  useEffect(() => {
+    /**
+     * E / Space adds the aimed product (demo-style quick add).
+     * @param event - Keyboard event
+     */
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!controlsEnabled || selectedProduct) return
+      if (event.code !== 'KeyE' && event.code !== 'Space') return
+      if (!aimedProduct) return
+      event.preventDefault()
+      addItem(aimedProduct)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [addItem, aimedProduct, controlsEnabled, selectedProduct])
 
   /**
    * Selects a catalog product from the 3D scene.
@@ -99,6 +130,7 @@ export const SupermarketScene = ({
   useFrame((_, delta) => {
     if (!controlsEnabled || selectedProduct) {
       if (aimedInstanceId) setAimedInstanceId(null)
+      if (useCartStore.getState().aimedProduct) setAimedProduct(null)
       return
     }
 
@@ -112,6 +144,13 @@ export const SupermarketScene = ({
     const nextId =
       (hit?.object.userData.instanceId as string | undefined) ?? null
     setAimedInstanceId((prev) => (prev === nextId ? prev : nextId))
+
+    const productId = hit?.object.userData.productId as string | undefined
+    const product = productId ? getProductById(productId) ?? null : null
+    const currentAimed = useCartStore.getState().aimedProduct
+    if ((product?.id ?? null) !== (currentAimed?.id ?? null)) {
+      setAimedProduct(product)
+    }
   })
 
   return (

@@ -8,6 +8,8 @@ interface CartState {
   isCartOpen: boolean
   isCheckoutOpen: boolean
   selectedProduct: Product | null
+  /** Product currently under the crosshair (not yet confirmed). */
+  aimedProduct: Product | null
   toastMessage: string | null
   addItem: (product: Product) => void
   removeItem: (productId: string) => void
@@ -18,6 +20,7 @@ interface CartState {
   openCheckout: () => void
   closeCheckout: () => void
   setSelectedProduct: (product: Product | null) => void
+  setAimedProduct: (product: Product | null) => void
   showToast: (message: string) => void
   clearToast: () => void
   itemCount: () => number
@@ -32,6 +35,7 @@ export const useCartStore = create<CartState>((set, get) => ({
   isCartOpen: false,
   isCheckoutOpen: false,
   selectedProduct: null,
+  aimedProduct: null,
   toastMessage: null,
 
   addItem: (product) => {
@@ -86,6 +90,7 @@ export const useCartStore = create<CartState>((set, get) => ({
     if (product && typeof document !== 'undefined') document.exitPointerLock()
     set({ selectedProduct: product })
   },
+  setAimedProduct: (product) => set({ aimedProduct: product }),
   showToast: (message) => set({ toastMessage: message }),
   clearToast: () => set({ toastMessage: null }),
 

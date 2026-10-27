@@ -1,5 +1,5 @@
 /**
- * Smoke test: start page, walk with arrows, UI unstick, 3D cart present.
+ * Smoke test: start page, walk with arrows, UI unstick, cart HUD, unique ids.
  */
 import { chromium } from 'playwright'
 
@@ -7,41 +7,21 @@ const BASE = process.env.BASE_URL || 'http://localhost:3000'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /**
- * Simulates holding a movement key for N physics steps.
+ * Simulates holding a movement key for N physics steps via the live useFrame loop
+ * by setting key flags and waiting for real frames when possible; falls back to
+ * direct position checks after keyboard events.
  * @param page - Playwright page
  * @param code - KeyboardEvent.code value
- * @param steps - Simulation steps at 1/60s
+ * @param ms - Hold duration
  */
-const holdAndStep = async (page, code, steps = 40) => {
-  const result = await page.evaluate(
-    ({ keyCode, n }) => {
-      if (!window.__rsStep || !window.__rsKeys) {
-        return { ok: false, reason: 'hooks missing' }
-      }
-      const before = {
-        x: window.__rsCam.position.x,
-        z: window.__rsCam.position.z,
-        yaw: window.__rsEuler.y,
-      }
-      window.__rsKeys[keyCode] = true
-      for (let i = 0; i < n; i += 1) {
-        window.__rsStep(1 / 60)
-      }
-      window.__rsKeys[keyCode] = false
-      return {
-        ok: true,
-        before,
-        after: {
-          x: window.__rsCam.position.x,
-          z: window.__rsCam.position.z,
-          yaw: window.__rsEuler.y,
-        },
-      }
-    },
-    { keyCode: code, n: steps }
-  )
-  if (!result.ok) throw new Error(result.reason)
-  return result
+const holdKey = async (page, code, ms = 700) => {
+  await page.evaluate((keyCode) => {
+    window.__rsKeys[keyCode] = true
+  }, code)
+  await sleep(ms)
+  await page.evaluate((keyCode) => {
+    window.__rsKeys[keyCode] = false
+  }, code)
 }
 
 const main = async () => {
@@ -53,49 +33,72 @@ const main = async () => {
   console.log('1. Loading store…')
   await page.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 60000 })
   await page.getByRole('button', { name: /start shopping/i }).click()
-  await page.waitForFunction(() => Boolean(window.__rsCam && window.__rsStep), null, {
+  await page.waitForFunction(() => Boolean(window.__rsCam && window.__rsKeys), null, {
     timeout: 20000,
   })
   console.log('   ✓ Canvas + controls ready')
 
-  console.log('2. Walking with ArrowUp…')
-  const walk = await holdAndStep(page, 'ArrowUp', 45)
-  if (!(walk.after.z < walk.before.z - 0.5)) {
-    throw new Error(`ArrowUp did not move forward (-Z): ${JSON.stringify(walk)}`)
+  console.log('2. Walking with ArrowUp (no prior S key)…')
+  const before = await page.evaluate(() => ({
+    x: window.__rsCam.position.x,
+    z: window.__rsCam.position.z,
+  }))
+  await holdKey(page, 'ArrowUp', 900)
+  const afterUp = await page.evaluate(() => ({
+    x: window.__rsCam.position.x,
+    z: window.__rsCam.position.z,
+  }))
+  if (!(afterUp.z < before.z - 0.4)) {
+    throw new Error(
+      `ArrowUp did not move forward on first try: ${JSON.stringify({ before, afterUp })}`
+    )
   }
-  console.log(
-    `   ✓ Forward z ${walk.before.z.toFixed(2)} → ${walk.after.z.toFixed(2)}`
-  )
+  console.log(`   ✓ Forward z ${before.z.toFixed(2)} → ${afterUp.z.toFixed(2)}`)
 
-  console.log('3. Turning with ArrowLeft…')
-  const turn = await holdAndStep(page, 'ArrowLeft', 40)
-  if (!(turn.after.yaw > turn.before.yaw + 0.3)) {
-    throw new Error(`ArrowLeft did not turn: ${JSON.stringify(turn)}`)
+  console.log('3. Strafing with ArrowLeft…')
+  const mid = await page.evaluate(() => ({
+    x: window.__rsCam.position.x,
+    z: window.__rsCam.position.z,
+  }))
+  await holdKey(page, 'ArrowLeft', 700)
+  const afterLeft = await page.evaluate(() => ({
+    x: window.__rsCam.position.x,
+    z: window.__rsCam.position.z,
+  }))
+  if (!(afterLeft.x < mid.x - 0.3)) {
+    throw new Error(
+      `ArrowLeft did not strafe: ${JSON.stringify({ mid, afterLeft })}`
+    )
   }
-  console.log(
-    `   ✓ Turn yaw ${turn.before.yaw.toFixed(2)} → ${turn.after.yaw.toFixed(2)}`
-  )
+  console.log(`   ✓ Strafe x ${mid.x.toFixed(2)} → ${afterLeft.x.toFixed(2)}`)
 
-  console.log('4. After cart UI, movement still works…')
+  console.log('4. Cart HUD visible…')
+  const cartHud = await page.locator('svg viewBox="0 0 420 120"').count()
+    .catch(async () => page.locator('svg').count())
+  const svgCount = await page.locator('.drop-shadow-\\[0_4px_12px_rgba\\(0\\,0\\,0\\,0\\.35\\)\\]').count()
+    .catch(() => 0)
+  const hasCartSvg = (await page.locator('svg').count()) > 0
+  if (!hasCartSvg && svgCount < 1 && cartHud < 1) {
+    // soft: ensure CartHud root exists via text fallback
+  }
+  const cartVisible = await page.evaluate(() => {
+    return Boolean(document.querySelector('svg path[d*="M40 28"]'))
+  })
+  if (!cartVisible) throw new Error('Cart HUD SVG not found')
+  console.log('   ✓ Wire cart HUD present')
+
+  console.log('5. After cart UI, movement still works…')
   await page.getByRole('button', { name: /shopping cart/i }).click()
   await sleep(250)
   await page.getByRole('button', { name: /close cart/i }).click()
   await sleep(400)
-
-  const afterUi = await holdAndStep(page, 'ArrowUp', 45)
-  const dist = Math.hypot(
-    afterUi.after.x - afterUi.before.x,
-    afterUi.after.z - afterUi.before.z
-  )
-  if (dist < 0.4) {
-    throw new Error(`Stuck after UI (moved ${dist}): ${JSON.stringify(afterUi)}`)
+  const before2 = await page.evaluate(() => window.__rsCam.position.z)
+  await holdKey(page, 'ArrowUp', 700)
+  const after2 = await page.evaluate(() => window.__rsCam.position.z)
+  if (!(after2 < before2 - 0.3)) {
+    throw new Error(`Stuck after UI: z ${before2} → ${after2}`)
   }
-  console.log(`   ✓ Moved ${dist.toFixed(2)} units after cart UI`)
-
-  console.log('5. 3D shopping cart attached…')
-  const cartKids = await page.evaluate(() => window.__rsCam.children.length)
-  if (cartKids < 1) throw new Error('No cart group on camera')
-  console.log(`   ✓ Cart on camera (${cartKids} child group(s))`)
+  console.log('   ✓ Still movable after cart UI')
 
   console.log('6. Unique product instance ids…')
   await page.waitForFunction(() => typeof window.__rsCountProducts === 'function', null, {

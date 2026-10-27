@@ -4,46 +4,60 @@ import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 
-const MOVE_SPEED = 5.5
-const LOOK_SPEED = 0.002
+/** Matches byomid.com/supermarket walk speeds. */
+const WALK_SPEED = 2.7
+const RUN_SPEED = 4.2
+const TURN_SPEED = 1.6
+const LOOK_SPEED = 0.0022
 const PLAYER_HEIGHT = 1.65
-const PLAYER_RADIUS = 0.32
-const PITCH_LIMIT = 1.15
+const PLAYER_RADIUS = 0.28
+const PITCH_LIMIT = 1.1
 
 /** Walkable store bounds (x/z). */
 export const STORE_BOUNDS = {
   minX: -10.5,
   maxX: 10.5,
   minZ: -12.5,
-  maxZ: 9.5,
+  maxZ: 8.0,
 }
 
-/** Shelf and fixture collision boxes. */
+/**
+ * Shelf / fixture collisions. Checkout counters sit behind the spawn line
+ * so the player is never trapped at start.
+ */
 const OBSTACLES: { minX: number; maxX: number; minZ: number; maxZ: number }[] = [
   { minX: -5.55, maxX: -4.45, minZ: -8.2, maxZ: 3.2 },
   { minX: 4.45, maxX: 5.55, minZ: -8.2, maxZ: 3.2 },
   { minX: -1.0, maxX: 1.0, minZ: -7.6, maxZ: -6.4 },
   { minX: -1.0, maxX: 1.0, minZ: 0.4, maxZ: 1.6 },
-  { minX: -6.2, maxX: -3.8, minZ: 8.3, maxZ: 9.7 },
-  { minX: -1.2, maxX: 1.2, minZ: 8.3, maxZ: 9.7 },
-  { minX: 3.8, maxX: 6.2, minZ: 8.3, maxZ: 9.7 },
 ]
 
+const MOVE_CODES = new Set([
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'ShiftLeft',
+  'ShiftRight',
+])
+
 interface PlayerControlsProps {
+  /** Shopping session has started. */
   enabled: boolean
+  /** When false (cart/checkout open), keys are ignored. */
   movementEnabled: boolean
   onLock?: () => void
   onUnlock?: () => void
 }
 
 /**
- * Returns 1/0 from a possibly undefined key flag (avoids NaN from Number(undefined)).
- * @param value - Key pressed flag
- */
-const keyBit = (value: boolean | undefined) => (value ? 1 : 0)
-
-/**
- * FPS walk controls: ↑↓←→ / WASD move relative to look; mouse looks around.
+ * Byomid-style controls:
+ * - W/↑ S/↓ walk · A/D strafe · ←/→ turn
+ * - Mouse look while pointer-locked (click canvas to lock)
  * @param props - Enable flags and lock callbacks
  */
 export const PlayerControls = ({
@@ -53,19 +67,9 @@ export const PlayerControls = ({
   onUnlock,
 }: PlayerControlsProps) => {
   const { camera, gl } = useThree()
-  const keysRef = useRef<Record<string, boolean>>({
-    ArrowUp: false,
-    ArrowDown: false,
-    ArrowLeft: false,
-    ArrowRight: false,
-    KeyW: false,
-    KeyA: false,
-    KeyS: false,
-    KeyD: false,
-  })
+  const keysRef = useRef<Set<string>>(new Set())
   const euler = useRef(new THREE.Euler(0, 0, 0, 'YXZ'))
   const isLocked = useRef(false)
-  const isDragging = useRef(false)
   const forward = useRef(new THREE.Vector3())
   const right = useRef(new THREE.Vector3())
   const wish = useRef(new THREE.Vector3())
@@ -74,70 +78,116 @@ export const PlayerControls = ({
   useEffect(() => {
     if (spawned.current) return
     spawned.current = true
-    // Spawn in the clear center aisle, facing into the store (-Z)
-    camera.position.set(0, PLAYER_HEIGHT, 8.2)
+    // Clear center aisle — in front of checkouts, facing into the store
+    camera.position.set(0, PLAYER_HEIGHT, 5.5)
     euler.current.set(0, 0, 0)
     camera.quaternion.setFromEuler(euler.current)
 
-    if (typeof window !== 'undefined') {
-      const w = window as unknown as {
-        __rsCam?: THREE.Camera
-        __rsEuler?: THREE.Euler
-        __rsKeys?: Record<string, boolean>
+    const w = window as unknown as {
+      __rsCam?: THREE.Camera
+      __rsEuler?: THREE.Euler
+      __rsKeys?: Set<string>
+      __rsTeleport?: (x: number, z: number, yaw: number) => void
+    }
+    w.__rsCam = camera
+    w.__rsEuler = euler.current
+    w.__rsKeys = keysRef.current
+    w.__rsTeleport = (x, z, yaw) => {
+      camera.position.set(x, PLAYER_HEIGHT, z)
+      euler.current.set(0, yaw, 0)
+      camera.quaternion.setFromEuler(euler.current)
+    }
+    /** Deterministic step for smoke tests (avoids headless rAF throttle). */
+    ;(window as unknown as { __rsStep?: (dt: number) => void }).__rsStep = (dt) => {
+      const keys = keysRef.current
+      if (keys.has('ArrowLeft')) {
+        euler.current.y += TURN_SPEED * dt
+        camera.quaternion.setFromEuler(euler.current)
       }
-      w.__rsCam = camera
-      w.__rsEuler = euler.current
-      w.__rsKeys = keysRef.current
+      if (keys.has('ArrowRight')) {
+        euler.current.y -= TURN_SPEED * dt
+        camera.quaternion.setFromEuler(euler.current)
+      }
+      let moveF =
+        (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) -
+        (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0)
+      let moveR = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0)
+      const len = Math.hypot(moveF, moveR)
+      if (len > 1) {
+        moveF /= len
+        moveR /= len
+      }
+      if (!moveF && !moveR) return
+      const yaw = euler.current.y
+      const fx = -Math.sin(yaw)
+      const fz = -Math.cos(yaw)
+      const rx = Math.cos(yaw)
+      const rz = -Math.sin(yaw)
+      const speed =
+        (keys.has('ShiftLeft') || keys.has('ShiftRight') ? RUN_SPEED : WALK_SPEED) * dt
+      const dx = (fx * moveF + rx * moveR) * speed
+      const dz = (fz * moveF + rz * moveR) * speed
+      const nextX = THREE.MathUtils.clamp(
+        camera.position.x + dx,
+        STORE_BOUNDS.minX,
+        STORE_BOUNDS.maxX
+      )
+      const nextZ = THREE.MathUtils.clamp(
+        camera.position.z + dz,
+        STORE_BOUNDS.minZ,
+        STORE_BOUNDS.maxZ
+      )
+      if (!collides(nextX, camera.position.z)) camera.position.x = nextX
+      if (!collides(camera.position.x, nextZ)) camera.position.z = nextZ
+      camera.position.y = PLAYER_HEIGHT
     }
   }, [camera])
 
   useEffect(() => {
     const canvas = gl.domElement
-    const moveCodes = new Set([
-      'ArrowUp',
-      'ArrowDown',
-      'ArrowLeft',
-      'ArrowRight',
-      'KeyW',
-      'KeyA',
-      'KeyS',
-      'KeyD',
-    ])
 
     /**
-     * Tracks pressed movement keys.
+     * Requests pointer lock for mouse look (byomid startFree equivalent).
+     */
+    const startFree = () => {
+      if (!enabled) return
+      if (document.pointerLockElement === canvas) return
+      canvas.requestPointerLock()
+    }
+
+    /**
+     * Tracks pressed movement keys (Set, like the byomid demo).
      * @param event - Keyboard event
      */
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!moveCodes.has(event.code)) return
+      if (!MOVE_CODES.has(event.code)) return
       event.preventDefault()
-      keysRef.current[event.code] = true
+      if (!enabled || !movementEnabled) return
+      keysRef.current.add(event.code)
+      startFree()
     }
 
     /**
-     * Clears released movement keys.
+     * Clears released keys.
      * @param event - Keyboard event
      */
     const onKeyUp = (event: KeyboardEvent) => {
-      if (!moveCodes.has(event.code)) return
-      keysRef.current[event.code] = false
+      keysRef.current.delete(event.code)
     }
 
     /**
-     * Clears all keys when the window loses focus (prevents stuck keys).
+     * Clears keys on blur / tab hide.
      */
     const clearKeys = () => {
-      for (const code of moveCodes) keysRef.current[code] = false
+      keysRef.current.clear()
     }
 
     /**
-     * Mouse look while pointer-locked or right-dragging.
+     * Mouse look while pointer-locked.
      * @param event - Mouse move
      */
     const onMouseMove = (event: MouseEvent) => {
-      if (!enabled) return
-      if (!isLocked.current && !isDragging.current) return
-
+      if (!enabled || !isLocked.current) return
       euler.current.y -= event.movementX * LOOK_SPEED
       euler.current.x -= event.movementY * LOOK_SPEED
       euler.current.x = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, euler.current.x))
@@ -145,30 +195,15 @@ export const PlayerControls = ({
     }
 
     /**
-     * Starts right-drag look when not pointer-locked.
-     * @param event - Pointer down
+     * Click canvas to enter free-look (demo pattern).
      */
-    const onPointerDown = (event: PointerEvent) => {
-      if (!enabled || event.button !== 2) return
-      if (isLocked.current) return
-      event.preventDefault()
-      isDragging.current = true
-      canvas.setPointerCapture(event.pointerId)
+    const onCanvasClick = () => {
+      if (!enabled) return
+      startFree()
     }
 
     /**
-     * Ends drag look.
-     * @param event - Pointer up
-     */
-    const onPointerUp = (event: PointerEvent) => {
-      isDragging.current = false
-      if (canvas.hasPointerCapture(event.pointerId)) {
-        canvas.releasePointerCapture(event.pointerId)
-      }
-    }
-
-    /**
-     * Blocks the browser context menu for right-drag look.
+     * Blocks context menu on the canvas.
      * @param event - Context menu event
      */
     const onContextMenu = (event: Event) => {
@@ -176,7 +211,7 @@ export const PlayerControls = ({
     }
 
     /**
-     * Syncs pointer-lock state for free look.
+     * Syncs pointer-lock state.
      */
     const onLockChange = () => {
       const locked = document.pointerLockElement === canvas
@@ -188,25 +223,28 @@ export const PlayerControls = ({
     window.addEventListener('keydown', onKeyDown, { passive: false })
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('blur', clearKeys)
+    document.addEventListener('visibilitychange', clearKeys)
     document.addEventListener('mousemove', onMouseMove)
     document.addEventListener('pointerlockchange', onLockChange)
-    canvas.addEventListener('pointerdown', onPointerDown)
-    canvas.addEventListener('pointerup', onPointerUp)
-    canvas.addEventListener('pointercancel', onPointerUp)
+    canvas.addEventListener('click', onCanvasClick)
     canvas.addEventListener('contextmenu', onContextMenu)
 
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', clearKeys)
+      document.removeEventListener('visibilitychange', clearKeys)
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('pointerlockchange', onLockChange)
-      canvas.removeEventListener('pointerdown', onPointerDown)
-      canvas.removeEventListener('pointerup', onPointerUp)
-      canvas.removeEventListener('pointercancel', onPointerUp)
+      canvas.removeEventListener('click', onCanvasClick)
       canvas.removeEventListener('contextmenu', onContextMenu)
     }
-  }, [camera, enabled, gl.domElement, onLock, onUnlock])
+  }, [camera, enabled, gl.domElement, movementEnabled, onLock, onUnlock])
+
+  // Clear keys when UI disables movement (cart / checkout)
+  useEffect(() => {
+    if (!movementEnabled) keysRef.current.clear()
+  }, [movementEnabled])
 
   useFrame((_, delta) => {
     if (!enabled || !movementEnabled) return
@@ -214,24 +252,41 @@ export const PlayerControls = ({
     const dt = Math.min(delta, 0.05)
     const keys = keysRef.current
 
-    // Demo-style: all four arrows / WASD move on the floor plane
-    const moveForward = keyBit(keys.ArrowUp || keys.KeyW) - keyBit(keys.ArrowDown || keys.KeyS)
-    const moveStrafe = keyBit(keys.ArrowRight || keys.KeyD) - keyBit(keys.ArrowLeft || keys.KeyA)
+    // ← → turn in place (byomid behavior)
+    if (keys.has('ArrowLeft')) {
+      euler.current.y += TURN_SPEED * dt
+      camera.quaternion.setFromEuler(euler.current)
+    }
+    if (keys.has('ArrowRight')) {
+      euler.current.y -= TURN_SPEED * dt
+      camera.quaternion.setFromEuler(euler.current)
+    }
 
-    if (!moveForward && !moveStrafe) return
+    // W/↑ S/↓ walk · A/D strafe
+    let moveF =
+      (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) -
+      (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0)
+    let moveR = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0)
 
-    // Yaw-only facing so pitch does not break walking
+    const len = Math.hypot(moveF, moveR)
+    if (len > 1) {
+      moveF /= len
+      moveR /= len
+    }
+    if (!moveF && !moveR) return
+
     const yaw = euler.current.y
     forward.current.set(-Math.sin(yaw), 0, -Math.cos(yaw))
     right.current.set(Math.cos(yaw), 0, -Math.sin(yaw))
 
+    const speed =
+      (keys.has('ShiftLeft') || keys.has('ShiftRight') ? RUN_SPEED : WALK_SPEED) * dt
+
     wish.current
       .set(0, 0, 0)
-      .addScaledVector(forward.current, moveForward)
-      .addScaledVector(right.current, moveStrafe)
-
-    if (wish.current.lengthSq() < 0.0001) return
-    wish.current.normalize().multiplyScalar(MOVE_SPEED * dt)
+      .addScaledVector(forward.current, moveF)
+      .addScaledVector(right.current, moveR)
+      .multiplyScalar(speed)
 
     const nextX = THREE.MathUtils.clamp(
       camera.position.x + wish.current.x,
@@ -244,7 +299,6 @@ export const PlayerControls = ({
       STORE_BOUNDS.maxZ
     )
 
-    // Axis-separated sliding along shelves
     if (!collides(nextX, camera.position.z)) camera.position.x = nextX
     if (!collides(camera.position.x, nextZ)) camera.position.z = nextZ
     camera.position.y = PLAYER_HEIGHT

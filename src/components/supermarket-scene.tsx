@@ -36,15 +36,12 @@ export const SupermarketScene = ({
   const raycaster = useMemo(() => new THREE.Raycaster(), [])
   const center = useMemo(() => new THREE.Vector2(0, 0), [])
   const aimCooldown = useRef(0)
-  const eulerRef = useRef<THREE.Euler | null>(null)
 
   useEffect(() => {
     if (typeof window === 'undefined') return
     const w = window as unknown as {
       __rsScene?: THREE.Scene
       __rsCountProducts?: () => { products: number; unique: number }
-      __rsTeleport?: (x: number, z: number, yaw: number) => void
-      __rsEuler?: THREE.Euler
     }
     w.__rsScene = scene
     w.__rsCountProducts = () => {
@@ -56,16 +53,7 @@ export const SupermarketScene = ({
       })
       return { products: ids.length, unique: new Set(ids).size }
     }
-    w.__rsTeleport = (x, z, yaw) => {
-      camera.position.set(x, 1.65, z)
-      const euler = w.__rsEuler
-      if (euler) {
-        euler.set(0, yaw, 0)
-        camera.quaternion.setFromEuler(euler)
-      }
-      eulerRef.current = euler ?? null
-    }
-  }, [camera, scene])
+  }, [scene])
 
   useEffect(() => {
     /**
